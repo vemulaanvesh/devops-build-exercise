@@ -70,12 +70,15 @@ jobs:
   tflint:
     name: tflint
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
     steps:
       - uses: actions/checkout@v4
 
       - uses: terraform-linters/setup-tflint@v4
         with:
-          tflint_version: latest
+          tflint_version: v0.62.1
 
       - name: Init
         run: tflint --init
@@ -83,7 +86,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Lint
-        run: tflint --recursive --format compact infra/terraform/
+        run: tflint --recursive --format compact
 
   tfsec:
     name: Static security scan (Trivy IaC)
@@ -91,7 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Trivy config scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: config
           scan-ref: infra/terraform
