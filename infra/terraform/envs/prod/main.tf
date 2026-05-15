@@ -16,9 +16,6 @@
 #   9. Observability ALB-bound alarms patched in via module composition.
 ###############################################################################
 
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
-
 locals {
   common_tags = {
     Project = "underwriting-agent"
