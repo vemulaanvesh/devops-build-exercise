@@ -26,13 +26,30 @@ htmlcov/
 *.swp
 .DS_Store
 
-# Terraform (candidate may add this)
+# Terraform
 *.tfstate
 *.tfstate.*
 .terraform/
-.terraform.lock.hcl
 crash.log
+# Allow .terraform.lock.hcl: it pins providers and SHOULD be committed.
+!.terraform.lock.hcl
+# Don't commit real tfvars (use *.example as the committed template).
+*.tfvars
+!*.tfvars.example
+# Plan artifacts
+tfplan
+plan.txt
 
 # Local data
 *.db
 *.sqlite
+
+# ─── Local-only candidate prep (never push to the take-home repo) ─────────
+# Internal design rationale, generated images, and interview cheat-sheet.
+# These live in the working copy for reference, but are not part of the
+# submission to the interviewer.
+docs/
+assets/
+INTERVIEW_PREP.md
+path/to/
+

@@ -1,0 +1,142 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [Build image]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment"
+        required: true
+        default: "prod"
+        type: choice
+        options: [dev, staging, prod]
+      image_uri:
+        description: "Override image URI (default: read from SSM)"
+        required: false
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # One deploy per env at a time.
+  group: deploy-${{ inputs.env || 'prod' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  plan:
+    name: Plan
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    outputs:
+      env: ${{ steps.resolve.outputs.env }}
+      image_uri: ${{ steps.resolve.outputs.image_uri }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: resolve
+        name: Resolve env and image
+        run: |
+          ENV="${{ inputs.env }}"
+          ENV="${ENV:-prod}"
+          echo "env=$ENV" >> "$GITHUB_OUTPUT"
+          echo "Selected env: $ENV"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image URI
+        id: image
+        run: |
+          if [[ -n "${{ inputs.image_uri }}" ]]; then
+            IMAGE_URI="${{ inputs.image_uri }}"
+          else
+            IMAGE_URI=$(aws ssm get-parameter --name "/agent/${{ steps.resolve.outputs.env }}/image_uri" --with-decryption --query 'Parameter.Value' --output text)
+          fi
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+          echo "Using image: $IMAGE_URI"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.12.1
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/terraform/envs/${{ steps.resolve.outputs.env }}
+        run: terraform init -input=false
+
+      - name: Terraform plan
+        working-directory: infra/terraform/envs/${{ steps.resolve.outputs.env }}
+        env:
+          TF_VAR_image_uri: ${{ steps.image.outputs.image_uri }}
+        run: |
+          terraform plan -input=false -out=tfplan -no-color | tee plan.txt
+
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ steps.resolve.outputs.env }}
+          path: |
+            infra/terraform/envs/${{ steps.resolve.outputs.env }}/tfplan
+            infra/terraform/envs/${{ steps.resolve.outputs.env }}/plan.txt
+          retention-days: 14
+
+  apply:
+    name: Apply (gated)
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: ${{ needs.plan.outputs.env }} # requires manual approval if env protection is on
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.12.1
+          terraform_wrapper: false
+
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.plan.outputs.env }}
+          path: infra/terraform/envs/${{ needs.plan.outputs.env }}
+
+      - name: Terraform init
+        working-directory: infra/terraform/envs/${{ needs.plan.outputs.env }}
+        run: terraform init -input=false
+
+      - name: Terraform apply
+        working-directory: infra/terraform/envs/${{ needs.plan.outputs.env }}
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Force ECS deployment
+        working-directory: infra/terraform/envs/${{ needs.plan.outputs.env }}
+        run: |
+          CLUSTER=$(terraform output -raw ecs_cluster_name)
+          SERVICE=$(terraform output -raw ecs_service_name)
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment >/dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+
+      - name: Smoke test
+        working-directory: infra/terraform/envs/${{ needs.plan.outputs.env }}
+        run: |
+          ALB=$(terraform output -raw alb_dns_name)
+          # Internal ALB — only reachable from inside the VPC. The smoke test
+          # runs an SSM command on a bastion or uses an existing private
+          # runner. Stubbed here.
+          echo "Would curl https://$ALB/healthz from inside VPC (skipped on hosted runner)"
