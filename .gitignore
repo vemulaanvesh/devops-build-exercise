@@ -39,6 +39,9 @@ crash.log
 # Plan artifacts
 tfplan
 plan.txt
+# Local-only test overrides for plan-against-sandbox flows
+*_override.tf
+terraform.local.tfstate*
 
 # Local data
 *.db
