@@ -40,6 +40,18 @@ variable "acm_certificate_arn" {
   type        = string
 }
 
+variable "alb_access_logs_bucket" {
+  description = "S3 bucket name for ALB access logs. Empty disables access logs."
+  type        = string
+  default     = ""
+}
+
+variable "alb_access_logs_prefix" {
+  description = "S3 key prefix under which ALB writes access logs."
+  type        = string
+  default     = "alb"
+}
+
 variable "image_uri" {
   description = "Container image, e.g. <acct>.dkr.ecr.<region>.amazonaws.com/agent:<sha>."
   type        = string

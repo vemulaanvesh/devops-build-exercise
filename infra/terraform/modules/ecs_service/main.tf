@@ -427,6 +427,15 @@ resource "aws_lb" "this" {
   enable_deletion_protection = var.deletion_protection
   idle_timeout               = 30
 
+  dynamic "access_logs" {
+    for_each = var.alb_access_logs_bucket == "" ? [] : [1]
+    content {
+      bucket  = var.alb_access_logs_bucket
+      prefix  = var.alb_access_logs_prefix
+      enabled = true
+    }
+  }
+
   tags = local.tags
 }
 

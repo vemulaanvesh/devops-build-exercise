@@ -16,12 +16,25 @@
 #   9. Observability ALB-bound alarms patched in via module composition.
 ###############################################################################
 
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 locals {
+  account_id = data.aws_caller_identity.current.account_id
+  region     = data.aws_region.current.region
+
   common_tags = {
     Project = "underwriting-agent"
     Env     = "prod"
     Owner   = "devops"
   }
+
+  # S3 bucket names must be globally unique. Suffix with account ID so the
+  # same Terraform applies cleanly across dev/staging/prod accounts without
+  # naming collisions with other AWS tenants.
+  docs_bucket_name     = "${var.docs_bucket_name}-${local.account_id}"
+  audit_bucket_name    = "${var.audit_bucket_name}-${local.account_id}"
+  alb_logs_bucket_name = "${var.name_prefix}-alb-logs-${local.account_id}"
 
   # Derive NAT count from the explicit override OR the fallback flag.
   # - enable_anthropic_fallback=false (default) → 0 NATs (zero public egress)
@@ -75,7 +88,7 @@ module "ecr" {
 
 module "docs_bucket" {
   source              = "../../modules/storage"
-  bucket_name         = var.docs_bucket_name
+  bucket_name         = local.docs_bucket_name
   kms_key_arn         = module.kms.key_arn_by_purpose["s3_docs"]
   object_lock_enabled = false
   tags                = local.common_tags
@@ -97,7 +110,7 @@ module "docs_bucket" {
 
 module "audit_bucket" {
   source                     = "../../modules/storage"
-  bucket_name                = var.audit_bucket_name
+  bucket_name                = local.audit_bucket_name
   kms_key_arn                = module.kms.key_arn_by_purpose["s3_audit"]
   object_lock_enabled        = true
   object_lock_mode           = "COMPLIANCE"
@@ -115,6 +128,117 @@ module "audit_bucket" {
       ]
     }
   ]
+}
+
+###############################################################################
+# ALB access logs bucket
+#
+# AWS ALB requires:
+#   - SSE-S3 (AES256) — KMS-CMK is not supported by ALB log delivery
+#   - A bucket policy granting the ELB account in the region PutObject
+#   - Object key prefix that the ALB writes to
+###############################################################################
+
+# AWS-published ELB account IDs per region (used in the bucket policy).
+# Reference: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/enable-access-logging.html
+locals {
+  elb_account_id_by_region = {
+    "us-east-1"      = "127311923021"
+    "us-east-2"      = "033677994240"
+    "us-west-1"      = "027434742980"
+    "us-west-2"      = "797873946194"
+    "eu-west-1"      = "156460612806"
+    "eu-central-1"   = "054676820928"
+    "ap-south-1"     = "718504428378"
+    "ap-northeast-1" = "582318560864"
+  }
+  elb_service_account = local.elb_account_id_by_region[local.region]
+}
+
+resource "aws_s3_bucket" "alb_logs" {
+  bucket        = local.alb_logs_bucket_name
+  force_destroy = false
+  tags = merge(local.common_tags, {
+    Name = local.alb_logs_bucket_name
+  })
+}
+
+resource "aws_s3_bucket_ownership_controls" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  rule { object_ownership = "BucketOwnerEnforced" }
+}
+
+resource "aws_s3_bucket_public_access_block" "alb_logs" {
+  bucket                  = aws_s3_bucket.alb_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256" # ALB log delivery does not support SSE-KMS
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  rule {
+    id     = "expire-after-90d"
+    status = "Enabled"
+    filter { prefix = "" }
+    expiration { days = 90 }
+    abort_incomplete_multipart_upload { days_after_initiation = 7 }
+  }
+}
+
+data "aws_iam_policy_document" "alb_logs" {
+  statement {
+    sid    = "AllowELBLogDelivery"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${local.elb_service_account}:root"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.alb_logs.arn}/AWSLogs/${local.account_id}/*"]
+  }
+
+  statement {
+    sid    = "AllowDeliveryLogsService"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.alb_logs.arn}/AWSLogs/${local.account_id}/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values   = ["bucket-owner-full-control"]
+    }
+  }
+
+  statement {
+    sid    = "AllowDeliveryLogsServiceAclCheck"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+    actions   = ["s3:GetBucketAcl"]
+    resources = [aws_s3_bucket.alb_logs.arn]
+  }
+}
+
+resource "aws_s3_bucket_policy" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  policy = data.aws_iam_policy_document.alb_logs.json
 }
 
 ###############################################################################
@@ -256,8 +380,10 @@ module "ecs" {
   alb_security_group_id = module.network.alb_security_group_id
   ecs_security_group_id = module.network.ecs_security_group_id
 
-  alb_internal        = true
-  acm_certificate_arn = var.acm_certificate_arn
+  alb_internal           = true
+  acm_certificate_arn    = var.acm_certificate_arn
+  alb_access_logs_bucket = aws_s3_bucket.alb_logs.id
+  alb_access_logs_prefix = "alb"
 
   image_uri      = var.image_uri
   container_port = 8080
