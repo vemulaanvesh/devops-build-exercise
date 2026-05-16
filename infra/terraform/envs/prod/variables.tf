@@ -20,10 +20,38 @@ variable "az_count" {
   default = 2
 }
 
+variable "enable_anthropic_fallback" {
+  description = <<-EOT
+    Toggle the Anthropic public-API fallback for the LLM provider.
+
+    Default: false (Bedrock-only, zero public egress).
+
+    When true:
+      - Provisions 1 NAT Gateway per AZ so ECS tasks can reach the
+        Anthropic public API (which has no AWS VPC endpoint).
+      - The agent-prod/anthropic Secrets Manager secret is still
+        created either way; populate its api_key value before flipping
+        LLM_PROVIDER from bedrock to anthropic.
+
+    Activation steps for an actual failover:
+      1. terraform apply -var=enable_anthropic_fallback=true
+      2. aws secretsmanager put-secret-value --secret-id agent-prod/anthropic \
+           --secret-string '{"api_key":"sk-..."}'
+      3. aws ssm put-parameter --name /agent/prod/llm_provider --value anthropic ...
+      4. aws ecs update-service --force-new-deployment ...
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "nat_gateway_count" {
-  description = "0 = endpoint-only egress (prod default). Bump to 2 if you need ad-hoc internet egress."
+  description = <<-EOT
+    Override the number of NAT Gateways. By default this is derived from
+    enable_anthropic_fallback (false=0 NATs, true=2 NATs across AZs).
+    Set explicitly only for ad-hoc debug egress without enabling fallback.
+  EOT
   type        = number
-  default     = 0
+  default     = null
 }
 
 variable "alb_ingress_cidrs" {

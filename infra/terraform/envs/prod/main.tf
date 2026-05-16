@@ -22,6 +22,16 @@ locals {
     Env     = "prod"
     Owner   = "devops"
   }
+
+  # Derive NAT count from the explicit override OR the fallback flag.
+  # - enable_anthropic_fallback=false (default) → 0 NATs (zero public egress)
+  # - enable_anthropic_fallback=true            → 2 NATs (one per AZ for HA)
+  # - var.nat_gateway_count not null            → explicit override (debug)
+  effective_nat_gateway_count = (
+    var.nat_gateway_count != null
+    ? var.nat_gateway_count
+    : (var.enable_anthropic_fallback ? var.az_count : 0)
+  )
 }
 
 ###############################################################################
@@ -44,7 +54,7 @@ module "network" {
   name_prefix        = var.name_prefix
   vpc_cidr           = var.vpc_cidr
   az_count           = var.az_count
-  nat_gateway_count  = var.nat_gateway_count
+  nat_gateway_count  = local.effective_nat_gateway_count
   alb_ingress_cidrs  = var.alb_ingress_cidrs
   ecs_container_port = 8080
   tags               = local.common_tags
@@ -142,14 +152,30 @@ module "db_secret" {
   tags = local.common_tags
 }
 
+###############################################################################
+# Anthropic fallback secret.
+#
+# Always provisioned (the slot exists) but not used in normal operation —
+# the agent runs against Bedrock by default. To activate the fallback:
+#
+#   1. terraform apply -var=enable_anthropic_fallback=true
+#      (provisions NAT Gateways so tasks can reach the public Anthropic API)
+#   2. aws secretsmanager put-secret-value \
+#        --secret-id agent-prod/anthropic \
+#        --secret-string '{"api_key":"sk-ant-..."}'
+#   3. aws ssm put-parameter --name /agent/prod/llm_provider --value anthropic ...
+#   4. aws ecs update-service ... --force-new-deployment
+#
+# Manual rotation reminder (third-party SaaS keys can't auto-rotate):
+# wire an EventBridge schedule to PagerDuty 75 days after last rotation.
+###############################################################################
+
 module "anthropic_secret" {
   source      = "../../modules/secrets"
   secret_name = "${var.name_prefix}/anthropic"
-  description = "Anthropic API key (rotate quarterly via PagerDuty reminder)"
+  description = "Anthropic API key — fallback only; populate to activate"
   kms_key_arn = module.kms.key_arn_by_purpose["secrets"]
 
-  # No managed rotation for third-party SaaS keys; reminder via CW alarm
-  # (out of scope for this module — wire as an EventBridge schedule).
   initial_secret_string = jsonencode({ api_key = "" })
 
   tags = local.common_tags

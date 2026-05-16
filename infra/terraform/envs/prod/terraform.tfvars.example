@@ -9,8 +9,18 @@ name_prefix = "agent-prod"
 # Networking
 vpc_cidr          = "10.40.0.0/16"
 az_count          = 2
-nat_gateway_count = 0
 alb_ingress_cidrs = ["10.0.0.0/8"]
+
+# LLM provider failover toggle.
+# false (default): Bedrock-only, zero NAT, zero public egress.
+# true:           provisions NAT GWs so the agent can reach the public
+#                 Anthropic API. Activation also needs steps documented
+#                 in main.tf "Anthropic fallback secret" comment.
+enable_anthropic_fallback = false
+
+# Optional explicit override of nat_gateway_count (debug egress without
+# enabling fallback). Leave null in normal operation.
+# nat_gateway_count = null
 
 # TLS — must be an ACM cert in `region` covering the ALB hostname
 acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/REPLACE-ME"
