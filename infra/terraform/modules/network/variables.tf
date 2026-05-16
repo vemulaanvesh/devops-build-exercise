@@ -42,6 +42,24 @@ variable "ecs_container_port" {
   default     = 8080
 }
 
+variable "enable_flow_logs" {
+  description = "Provision VPC Flow Logs to a KMS-encrypted CW Log Group."
+  type        = bool
+  default     = true
+}
+
+variable "flow_logs_retention_days" {
+  description = "VPC Flow Logs retention in days."
+  type        = number
+  default     = 90
+}
+
+variable "flow_logs_kms_key_arn" {
+  description = "KMS CMK ARN for VPC Flow Logs CW Log Group encryption."
+  type        = string
+  default     = null
+}
+
 variable "tags" {
   description = "Common tags to apply."
   type        = map(string)

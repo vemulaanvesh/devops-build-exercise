@@ -142,3 +142,19 @@ variable "log_retention_days" {
   type    = number
   default = 90
 }
+
+variable "enable_bedrock_invocation_logging" {
+  description = <<-EOT
+    Enable Bedrock model invocation logging to the audit bucket.
+    Account+region scoped — only ONE configuration per region per account.
+    Set false if another stack in this account already owns it.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "monthly_budget_usd" {
+  description = "Threshold for the monthly EstimatedCharges billing alarm."
+  type        = number
+  default     = 2000
+}

@@ -383,6 +383,27 @@ resource "aws_cloudwatch_metric_alarm" "audit_freshness" {
   tags = var.tags
 }
 
+# Monthly cost guard. AWS publishes EstimatedCharges only in us-east-1
+# regardless of the workload's region. The alarm therefore only fires when
+# this stack is deployed in us-east-1.
+resource "aws_cloudwatch_metric_alarm" "monthly_billing" {
+  count               = var.monthly_budget_usd > 0 && data.aws_region.current.region == "us-east-1" ? 1 : 0
+  alarm_name          = "${var.name_prefix}-monthly-billing"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  threshold           = var.monthly_budget_usd
+  alarm_description   = "Monthly EstimatedCharges exceeded $${var.monthly_budget_usd} — investigate runaway LLM spend or other cost drift"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  metric_name         = "EstimatedCharges"
+  namespace           = "AWS/Billing"
+  statistic           = "Maximum"
+  period              = 21600 # 6 hours; billing metric updates several times per day
+  dimensions = {
+    Currency = "USD"
+  }
+  tags = var.tags
+}
+
 ###############################################################################
 # Dashboard
 ###############################################################################

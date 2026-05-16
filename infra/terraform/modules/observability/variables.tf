@@ -54,6 +54,17 @@ variable "dlq_name" {
   type        = string
 }
 
+variable "monthly_budget_usd" {
+  description = <<-EOT
+    Threshold for the monthly EstimatedCharges billing alarm.
+    Note: AWS Billing metrics are only published in us-east-1 regardless
+    of where this stack runs, so the alarm only fires when this stack is
+    deployed in us-east-1. Set to 0 to disable the alarm.
+  EOT
+  type        = number
+  default     = 0
+}
+
 variable "tags" {
   description = "Common tags."
   type        = map(string)

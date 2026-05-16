@@ -63,14 +63,17 @@ module "kms" {
 ###############################################################################
 
 module "network" {
-  source             = "../../modules/network"
-  name_prefix        = var.name_prefix
-  vpc_cidr           = var.vpc_cidr
-  az_count           = var.az_count
-  nat_gateway_count  = local.effective_nat_gateway_count
-  alb_ingress_cidrs  = var.alb_ingress_cidrs
-  ecs_container_port = 8080
-  tags               = local.common_tags
+  source                   = "../../modules/network"
+  name_prefix              = var.name_prefix
+  vpc_cidr                 = var.vpc_cidr
+  az_count                 = var.az_count
+  nat_gateway_count        = local.effective_nat_gateway_count
+  alb_ingress_cidrs        = var.alb_ingress_cidrs
+  ecs_container_port       = 8080
+  enable_flow_logs         = true
+  flow_logs_retention_days = var.log_retention_days
+  flow_logs_kms_key_arn    = module.kms.key_arn_by_purpose["logs"]
+  tags                     = local.common_tags
 }
 
 ###############################################################################
@@ -306,6 +309,74 @@ module "anthropic_secret" {
 }
 
 ###############################################################################
+# Bedrock model invocation logging.
+#
+# Captures actual prompts and responses to the audit S3 bucket. This is a
+# Bedrock-native compliance feature and is stronger than relying on the
+# agent code's `audit.write` log emission (which carries the message text
+# but currently drops the structured `extra=` payload).
+#
+# Account+region scoped — there is only ONE configuration per region per
+# account. Set var.enable_bedrock_invocation_logging = false if another
+# stack in this account already owns the configuration.
+###############################################################################
+
+resource "aws_iam_role" "bedrock_logging" {
+  count = var.enable_bedrock_invocation_logging ? 1 : 0
+  name  = "${var.name_prefix}-bedrock-logging"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Service = "bedrock.amazonaws.com" },
+      Action    = "sts:AssumeRole",
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = local.account_id }
+      }
+    }]
+  })
+  tags = local.common_tags
+}
+
+data "aws_iam_policy_document" "bedrock_logging" {
+  count = var.enable_bedrock_invocation_logging ? 1 : 0
+  statement {
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${module.audit_bucket.bucket_arn}/bedrock/*"]
+  }
+  statement {
+    effect    = "Allow"
+    actions   = ["kms:Encrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
+    resources = [module.kms.key_arn_by_purpose["s3_audit"]]
+  }
+}
+
+resource "aws_iam_role_policy" "bedrock_logging" {
+  count  = var.enable_bedrock_invocation_logging ? 1 : 0
+  role   = aws_iam_role.bedrock_logging[0].id
+  policy = data.aws_iam_policy_document.bedrock_logging[0].json
+}
+
+resource "aws_bedrock_model_invocation_logging_configuration" "this" {
+  count = var.enable_bedrock_invocation_logging ? 1 : 0
+
+  logging_config {
+    embedding_data_delivery_enabled = false
+    image_data_delivery_enabled     = false
+    text_data_delivery_enabled      = true
+    video_data_delivery_enabled     = false
+
+    s3_config {
+      bucket_name = module.audit_bucket.bucket_name
+      key_prefix  = "bedrock/"
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.bedrock_logging]
+}
+
+###############################################################################
 # 5. RDS
 ###############################################################################
 
@@ -448,5 +519,6 @@ module "observability" {
   target_group_arn_suffix = module.ecs.target_group_arn_suffix
   queue_name              = module.queue.queue_name
   dlq_name                = module.queue.dlq_name
+  monthly_budget_usd      = var.monthly_budget_usd
   tags                    = local.common_tags
 }
