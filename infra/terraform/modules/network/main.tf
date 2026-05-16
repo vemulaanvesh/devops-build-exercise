@@ -286,6 +286,11 @@ locals {
     "sqs",
     "bedrock-runtime",
     "monitoring",
+    # Required by ECS Exec (Session Manager) so break-glass `aws ecs
+    # execute-command` works in private subnets without NAT egress.
+    "ssm",
+    "ssmmessages",
+    "ec2messages",
   ])
 }
 

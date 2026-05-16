@@ -275,6 +275,21 @@ data "aws_iam_policy_document" "task" {
     resources = [var.kms_key_arn_sqs]
   }
 
+  # ECS Exec (Session Manager) — required so `aws ecs execute-command`
+  # works as a break-glass debug tool. Channels are session-scoped, no
+  # broad access to SSM parameters or anything else.
+  statement {
+    sid    = "ECSExecSessionManager"
+    effect = "Allow"
+    actions = [
+      "ssmmessages:CreateControlChannel",
+      "ssmmessages:CreateDataChannel",
+      "ssmmessages:OpenControlChannel",
+      "ssmmessages:OpenDataChannel",
+    ]
+    resources = ["*"]
+  }
+
   # CloudWatch metric publish for custom metrics if the app emits them via SDK.
   statement {
     sid       = "CWMetricPublish"
