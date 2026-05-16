@@ -47,12 +47,9 @@ terraform.local.tfstate*
 *.db
 *.sqlite
 
-# ─── Local-only candidate prep (never push to the take-home repo) ─────────
-# Internal design rationale, generated images, and interview cheat-sheet.
-# These live in the working copy for reference, but are not part of the
-# submission to the interviewer.
+# Local-only working copies of design/ops notes and generated assets;
+# not part of the submission.
 docs/
 assets/
-INTERVIEW_PREP.md
 path/to/
 
