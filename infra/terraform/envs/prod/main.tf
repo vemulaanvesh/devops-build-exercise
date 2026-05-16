@@ -179,6 +179,7 @@ resource "aws_s3_bucket_public_access_block" "alb_logs" {
   restrict_public_buckets = true
 }
 
+# trivy:ignore:AWS-0132 ALB log delivery does not support SSE-KMS; AES256 is the only valid algorithm here per AWS docs
 resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
   rule {
