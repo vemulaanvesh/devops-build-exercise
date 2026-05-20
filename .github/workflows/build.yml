@@ -1,0 +1,91 @@
+name: Build image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build"
+        required: false
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: agent-prod-agent
+
+jobs:
+  build:
+    name: Build, scan, push
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.publish.outputs.image_uri }}
+      image_digest: ${{ steps.publish.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          load: true
+          tags: agent:${{ github.sha }}
+          provenance: false
+
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: agent:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Tag and push to ECR
+        id: publish
+        run: |
+          set -euo pipefail
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          IMAGE="$REGISTRY/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          docker tag agent:${GITHUB_SHA} "$IMAGE"
+          docker push "$IMAGE"
+
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" | awk -F'@' '{print $2}')
+          IMAGE_URI="$REGISTRY/${ECR_REPOSITORY}@${DIGEST}"
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Published $IMAGE_URI"
+
+      - name: Save image SHA to SSM
+        run: |
+          aws ssm put-parameter \
+            --name "/agent/prod/image_uri" \
+            --type SecureString \
+            --value "${{ steps.publish.outputs.image_uri }}" \
+            --overwrite

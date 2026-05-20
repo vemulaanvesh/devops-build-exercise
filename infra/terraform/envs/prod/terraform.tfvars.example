@@ -1,0 +1,58 @@
+###############################################################################
+# prod tfvars — copy to terraform.tfvars and fill in.
+# NEVER commit a real terraform.tfvars for prod (use OIDC + GHA secrets instead).
+###############################################################################
+
+region      = "us-east-1"
+name_prefix = "agent-prod"
+
+# Networking
+vpc_cidr          = "10.40.0.0/16"
+az_count          = 2
+alb_ingress_cidrs = ["10.0.0.0/8"]
+
+# LLM provider failover toggle.
+# false (default): Bedrock-only, zero NAT, zero public egress.
+# true:           provisions NAT GWs so the agent can reach the public
+#                 Anthropic API. Activation also needs steps documented
+#                 in main.tf "Anthropic fallback secret" comment.
+enable_anthropic_fallback = false
+
+# Optional explicit override of nat_gateway_count (debug egress without
+# enabling fallback). Leave null in normal operation.
+# nat_gateway_count = null
+
+# TLS — must be an ACM cert in `region` covering the ALB hostname
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/REPLACE-ME"
+
+# Image — set by CI/CD on every deploy, pinned by digest in prod
+image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/agent-prod-agent@sha256:REPLACE_ME"
+
+# Storage
+docs_bucket_name  = "saaf-agent-prod-docs"
+audit_bucket_name = "saaf-agent-prod-audit"
+
+# LLM
+llm_provider = "bedrock"
+llm_model    = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+bedrock_model_arns = [
+  # Resolve via `aws bedrock list-foundation-models`; pin per region.
+  "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+]
+
+# Email
+ses_from_address = "loans@saaffinance.com"
+ses_identity_arn = "arn:aws:ses:us-east-1:123456789012:identity/saaffinance.com"
+
+# Tracing
+otel_otlp_endpoint = "" # set to ADOT collector endpoint when ready
+
+# Sizing
+task_cpu      = 512
+task_memory   = 1024
+min_count     = 2
+max_count     = 20
+desired_count = 2
+
+# Log retention
+log_retention_days = 90

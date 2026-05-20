@@ -1,75 +1,90 @@
-# underwriting-agent
+# Underwriting-Assist Agent — Production Infrastructure
 
-Reference skeleton for the **Underwriting-Assist Agent** — the LLM-powered
-service that processes outstanding underwriting items on approved-pending
-loans at Saaf Finance.
+Take-home submission. The agent code in `src/agent/` is unchanged from the
+reference skeleton handed over with the spec. Everything outside `src/`,
+`tests/`, `examples/`, `Dockerfile`, and `pyproject.toml` is the production
+infrastructure built per `# Underwriting-Assist Agent — Service Sp.md`.
 
-> This repo is **deliberately minimal**. The agent logic is a stub. Your job
-> for the take-home is **not** to extend it. Your job is to design and build
-> the infrastructure that runs it in production. See
-> `service_spec.md` (handed over separately) for the runtime requirements.
+## Architecture diagram
 
-## What's in here
+![Underwriting-Assist Agent architecture](images/underwriting-agent-architecture.png)
+
+## What was built
+
+| Layer | Implementation |
+|---|---|
+| Compute | AWS ECS Fargate (ARM64 Graviton, Multi-AZ) behind an internal Application Load Balancer |
+| Ingestion | Amazon SQS FIFO + Dead Letter Queue with content-based dedup contract |
+| State | Amazon RDS PostgreSQL Multi-AZ + two S3 buckets (loan docs, audit with Object Lock COMPLIANCE 7-year retention) |
+| Identity | Two-role IAM split (execution + task) with zero `Resource: "*"` grants |
+| Secrets | AWS Secrets Manager with 90-day automatic rotation for the DB master credential |
+| Encryption | Six customer-managed KMS keys, one per use case (rds, s3_docs, s3_audit, secrets, logs, sqs), rotation enabled |
+| Network | VPC with private subnets across 2 AZs, 9 VPC endpoints, no NAT gateway |
+| LLM provider | Bedrock primary (via VPC endpoint), Anthropic public API as fallback |
+| Observability | CloudWatch Logs + 9 alarms + dashboard + SNS topic + Kinesis Firehose audit pipeline |
+| IaC | Terraform 1.6+ with AWS provider v6, modular (9 modules), remote S3 state with DynamoDB lock |
+| CI/CD | GitHub Actions: ci.yml (lint+test+IaC scan), build.yml (image build+scan+push), deploy.yml (plan+manual gate+apply), all via OIDC |
+
+## Verification
+
+`terraform plan` was executed against a real AWS sandbox account.
 
 ```
-underwriting-agent/
-├── pyproject.toml          # Python deps
-├── Dockerfile              # Multi-stage container build
-├── .env.example            # Required runtime environment variables
-├── .gitignore
-├── src/agent/
-│   ├── main.py             # FastAPI app: POST /v1/items/process
-│   ├── schema.py           # Pydantic request/response models
-│   ├── tools.py            # Tool definitions (Anthropic tool-use format)
-│   ├── llm.py              # Thin Anthropic / Bedrock client wrapper
-│   ├── store.py            # Postgres + S3 data access
-│   └── config.py           # Settings from environment variables
-├── tests/
-│   └── test_smoke.py       # One trivial pytest
-└── examples/
-    └── sample_loan.json    # One mock loan payload for local testing
+$ AWS_PROFILE=<sandbox> terraform plan ...
+Plan: 131 to add, 0 to change, 0 to destroy.
 ```
 
-## Run locally
+## Local verification
 
 ```bash
-# 1. Copy env vars
-cp .env.example .env
-# Edit .env — at minimum set ANTHROPIC_API_KEY for live runs.
-# For local development the LLM call is mocked when ANTHROPIC_API_KEY is unset.
-
-# 2. Install deps (Python 3.11+ required)
-pip install -e ".[dev]"
-
-# 3. Run the service
-uvicorn agent.main:app --host 0.0.0.0 --port 8080 --reload
-
-# 4. Smoke test
-curl -X POST http://localhost:8080/v1/items/process \
-  -H "Content-Type: application/json" \
-  -d @examples/sample_loan.json | jq
+make lint              # ruff against the unchanged app code
+make test              # pytest -q
+make tf-fmt-check      # terraform formatting
+make tf-validate       # validate every env composition
 ```
 
-Or via Docker:
+To do a full plan against your own AWS account:
 
 ```bash
-docker build -t underwriting-agent:dev .
-docker run --rm -p 8080:8080 --env-file .env underwriting-agent:dev
+cd infra/terraform/envs/prod
+cp terraform.tfvars.example terraform.tfvars   # fill in REPLACE_ME values
+terraform init
+terraform plan
 ```
 
-## Health checks
+## Repository layout
 
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /healthz` | Liveness — returns 200 if the process is up |
-| `GET /readyz`  | Readiness — checks Postgres + S3 connectivity |
-
-## Required environment variables
-
-See `.env.example` for the full list. At minimum the service needs:
-
-- `DATABASE_URL` — Postgres connection string
-- `S3_BUCKET` — Bucket holding uploaded borrower documents
-- `ANTHROPIC_API_KEY` — LLM provider key (or use AWS Bedrock; see `config.py`)
-- `AWS_REGION` — Region for SES + S3
-- `SES_FROM_ADDRESS` — Verified sender for outbound borrower email
+```
+.
+├── src/agent/                    # UNCHANGED — agent code
+├── tests/test_smoke.py           # UNCHANGED
+├── examples/sample_loan.json     # UNCHANGED
+├── Dockerfile                    # UNCHANGED
+├── pyproject.toml                # UNCHANGED
+├── .env.example                  # UNCHANGED
+│
+├── images/
+│   └── underwriting-agent-architecture.png
+│
+├── infra/terraform/
+│   ├── README.md                 # Bootstrap, OIDC roles, first-apply steps
+│   ├── modules/                  # 9 reusable modules
+│   │   ├── network/                #   VPC, subnets, SGs, VPC endpoints
+│   │   ├── kms/                    #   6 customer-managed CMKs
+│   │   ├── ecr/                    #   Container registry
+│   │   ├── storage/                #   Generic S3 (used for docs + audit)
+│   │   ├── secrets/                #   Secrets Manager wrapper
+│   │   ├── database/               #   RDS PostgreSQL Multi-AZ
+│   │   ├── queue/                  #   SQS FIFO + DLQ
+│   │   ├── observability/          #   Log group, alarms, dashboard, audit pipeline
+│   │   └── ecs_service/            #   Fargate cluster + ALB + autoscaling + IAM
+│   └── envs/prod/                # Composition wiring all modules
+│
+├── .github/workflows/
+│   ├── ci.yml                    # PR + main: lint, test, validate, IaC scan
+│   ├── build.yml                 # main: build + image scan + push to ECR
+│   └── deploy.yml                # plan → manual approval gate → apply
+│
+├── Makefile                      # Local convenience targets
+└── README.md                     # this file
+```
