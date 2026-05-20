@@ -5,6 +5,10 @@ reference skeleton handed over with the spec. Everything outside `src/`,
 `tests/`, `examples/`, `Dockerfile`, and `pyproject.toml` is the production
 infrastructure built per `# Underwriting-Assist Agent — Service Sp.md`.
 
+## Architecture diagram
+
+![Underwriting-Assist Agent architecture](images/underwriting-agent-architecture.png)
+
 ## What was built
 
 | Layer | Implementation |
@@ -58,6 +62,9 @@ terraform plan
 ├── Dockerfile                    # UNCHANGED
 ├── pyproject.toml                # UNCHANGED
 ├── .env.example                  # UNCHANGED
+│
+├── images/
+│   └── underwriting-agent-architecture.png
 │
 ├── infra/terraform/
 │   ├── README.md                 # Bootstrap, OIDC roles, first-apply steps
